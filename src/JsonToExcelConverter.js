@@ -1,61 +1,116 @@
 import React, { useState, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import * as ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { Upload, FileText, Download, AlertCircle, CheckCircle, X } from 'lucide-react';
 
 export default function JsonToExcelConverter() {
-  const [jsonData, setJsonData] = useState(null);
-  const [fileName, setFileName] = useState('');
+  const [jsonDataList, setJsonDataList] = useState([]);
+  const [fileNames, setFileNames] = useState([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [preview, setPreview] = useState([]);
+  const [totalRows, setTotalRows] = useState(0);
   const [originalJsonString, setOriginalJsonString] = useState('');
   const fileInputRef = useRef(null);
 
-  // Handle file upload
+  // Handle multiple file uploads
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
     // Reset states
     setError('');
     setSuccess('');
     setIsLoading(true);
-    setJsonData(null);
-    setPreview([]);
-
-    // Check if file is JSON
-    if (file.type !== 'application/json' && !file.name.endsWith('.json')) {
-      setError('Please upload a valid JSON file');
-      setIsLoading(false);
-      return;
-    }
-
-    setFileName(file.name.replace('.json', ''));
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        setOriginalJsonString(event.target.result);
-        const data = JSON.parse(event.target.result);
-        setJsonData(data);
+    
+    // Keep track of processed files
+    let processedCount = 0;
+    const newJsonDataList = [...jsonDataList];
+    const newFileNames = [...fileNames];
+    
+    // Process each file
+    Array.from(files).forEach(file => {
+      // Check if file is JSON
+      if (file.type !== 'application/json' && !file.name.endsWith('.json')) {
+        setError(prev => `${prev ? prev + '\n' : ''}${file.name}: Not a valid JSON file`);
+        processedCount++;
         
-        // Create preview
-        generatePreview(data);
-        setIsLoading(false);
-        setSuccess('JSON file loaded successfully');
-      } catch (err) {
-        setError('Invalid JSON format: ' + err.message);
-        setIsLoading(false);
+        if (processedCount === files.length) {
+          setIsLoading(false);
+        }
+        return;
       }
-    };
-    reader.onerror = () => {
-      setError('Error reading file');
-      setIsLoading(false);
-    };
-    reader.readAsText(file);
+      
+      // Add file name to the list
+      newFileNames.push(file.name.replace('.json', ''));
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = JSON.parse(event.target.result);
+          newJsonDataList.push(data);
+          
+          processedCount++;
+          
+          // When all files are processed
+          if (processedCount === files.length) {
+            setJsonDataList(newJsonDataList);
+            setFileNames(newFileNames);
+            
+            // Generate preview from combined data
+            generatePreview(newJsonDataList);
+            setIsLoading(false);
+            setSuccess(`${files.length} file(s) loaded successfully`);
+          }
+        } catch (err) {
+          setError(prev => `${prev ? prev + '\n' : ''}${file.name}: Invalid JSON format: ${err.message}`);
+          processedCount++;
+          
+          if (processedCount === files.length) {
+            setIsLoading(false);
+          }
+        }
+      };
+      
+      reader.onerror = () => {
+        setError(prev => `${prev ? prev + '\n' : ''}${file.name}: Error reading file`);
+        processedCount++;
+        
+        if (processedCount === files.length) {
+          setIsLoading(false);
+        }
+      };
+      
+      reader.readAsText(file);
+    });
+  };
+
+  // Process JSON data from the text area
+  const handleJsonInput = (jsonString) => {
+    setOriginalJsonString(jsonString);
+    
+    try {
+      if (jsonString.trim()) {
+        const data = JSON.parse(jsonString);
+        
+        // Add to the existing data list
+        const newJsonDataList = [...jsonDataList, data];
+        setJsonDataList(newJsonDataList);
+        
+        // Add a generic filename for this input
+        setFileNames([...fileNames, `manual_input_${fileNames.length + 1}`]);
+        
+        // Update preview
+        generatePreview(newJsonDataList);
+        setError('');
+        setSuccess('JSON parsed successfully');
+      } else {
+        setPreview([]);
+      }
+    } catch (err) {
+      setError('Invalid JSON format: ' + err.message);
+    }
   };
 
   // Extract specific headers and convert to table format
@@ -195,39 +250,73 @@ export default function JsonToExcelConverter() {
     return [{ value: data }];
   };
 
-  // Generate preview of the data
-  const generatePreview = (data) => {
+  // Generate preview from multiple JSON files
+  const generatePreview = (dataList) => {
     try {
-      // Convert to table format
-      const tableData = extractSpecificHeaders(data);
-      setPreview(tableData.slice(0, 5)); // Show first 5 items
+      if (!dataList || dataList.length === 0) {
+        setPreview([]);
+        setTotalRows(0);
+        return;
+      }
+      
+      // Process and combine data from all files
+      let allTableRows = [];
+      
+      dataList.forEach((data, index) => {
+        // Extract rows from this data
+        const tableData = extractSpecificHeaders(data);
+        
+        // Add source file information to each row (removed as per user request)
+        const rowsWithSource = tableData.map(row => ({
+          // Remove SourceFile column
+          ...row
+        }));
+        
+        // Add to the combined list
+        allTableRows = [...allTableRows, ...rowsWithSource];
+      });
+      
+      // Store total row count
+      setTotalRows(allTableRows.length);
+      
+      // Show preview of combined data
+      setPreview(allTableRows.slice(0, 5)); // Show first 5 items
     } catch (err) {
       console.error("Error generating preview:", err);
       setError("Error generating preview: " + err.message);
       setPreview([]);
+      setTotalRows(0);
     }
   };
 
   // Convert JSON to Excel with styled borders using ExcelJS
   const convertToExcel = () => {
-    if (!jsonData) {
+    if (!jsonDataList || jsonDataList.length === 0) {
       setError('No data to convert');
       return;
     }
 
     try {
-      // Convert to table format
-      const tableData = extractSpecificHeaders(jsonData);
+      // Process and combine data from all files
+      let allTableRows = [];
+      
+      jsonDataList.forEach((data, index) => {
+        // Extract rows from this data
+        const tableData = extractSpecificHeaders(data);
+        
+        // Simply add the rows without source file information
+        allTableRows = [...allTableRows, ...tableData];
+      });
       
       // Create a new workbook
       const workbook = new ExcelJS.Workbook();
       
       // Add a worksheet
-      const worksheet = workbook.addWorksheet('Data');
+      const worksheet = workbook.addWorksheet('Combined Data');
       
       // Add headers
-      if (tableData.length > 0) {
-        const headers = Object.keys(tableData[0]);
+      if (allTableRows.length > 0) {
+        const headers = Object.keys(allTableRows[0]);
         
         // Add header row
         worksheet.addRow(headers);
@@ -238,7 +327,7 @@ export default function JsonToExcelConverter() {
         headerRow.height = 22;
         
         // Add all data rows
-        tableData.forEach(row => {
+        allTableRows.forEach(row => {
           const values = headers.map(header => row[header] !== null ? row[header] : '');
           worksheet.addRow(values);
         });
@@ -251,9 +340,9 @@ export default function JsonToExcelConverter() {
           let maxLength = header.length;
           
           // Sample rows for width
-          const sampleSize = Math.min(10, tableData.length);
+          const sampleSize = Math.min(20, allTableRows.length);
           for (let j = 0; j < sampleSize; j++) {
-            const value = String(tableData[j][header] || '');
+            const value = String(allTableRows[j][header] || '');
             const valueLength = value.length;
             if (valueLength > maxLength) {
               maxLength = Math.min(valueLength, 50); // Cap at 50 chars
@@ -265,7 +354,7 @@ export default function JsonToExcelConverter() {
         });
         
         // Apply thin borders to all cells
-        const totalRows = tableData.length + 1; // +1 for header
+        const totalRows = allTableRows.length + 1; // +1 for header
         
         // Apply borders to all cells
         for (let rowIndex = 1; rowIndex <= totalRows; rowIndex++) {
@@ -324,11 +413,24 @@ export default function JsonToExcelConverter() {
           }
         }
         
+        // Freeze the header row
+        worksheet.views = [
+          { state: 'frozen', xSplit: 0, ySplit: 1, topLeftCell: 'A2', activeCell: 'A2' }
+        ];
+        
+        // Add filters to headers for easy sorting - REMOVE THIS IF YOU DON'T WANT FILTER DROPDOWNS
+        /*
+        worksheet.autoFilter = {
+          from: { row: 1, column: 1 },
+          to: { row: 1, column: headers.length }
+        };
+        */
+        
         // Write the file and save it
         workbook.xlsx.writeBuffer().then(buffer => {
           const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-          saveAs(blob, `${fileName || 'converted'}.xlsx`);
-          setSuccess(`Converted to ${fileName || 'converted'}.xlsx successfully`);
+          saveAs(blob, `combined_data.xlsx`);
+          setSuccess(`Combined data from ${jsonDataList.length} file(s) exported successfully`);
         });
       } else {
         setError('No data to convert');
@@ -340,11 +442,12 @@ export default function JsonToExcelConverter() {
 
   // Reset the form
   const resetForm = () => {
-    setJsonData(null);
-    setFileName('');
+    setJsonDataList([]);
+    setFileNames([]);
     setError('');
     setSuccess('');
     setPreview([]);
+    setTotalRows(0);
     setOriginalJsonString('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -356,7 +459,7 @@ export default function JsonToExcelConverter() {
       <div className="max-w-4xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-indigo-800 mb-2">JSON to Excel Converter</h1>
-          <p className="text-gray-600">Upload a JSON file and convert it to an Excel spreadsheet</p>
+          <p className="text-gray-600">Upload JSON files and convert them to a single Excel spreadsheet</p>
         </div>
 
         {/* File Upload Card */}
@@ -371,12 +474,13 @@ export default function JsonToExcelConverter() {
               onChange={handleFileUpload}
               className="hidden" 
               accept=".json"
+              multiple
             />
             
             <div className="flex flex-col items-center">
               <Upload className="h-12 w-12 text-indigo-500 mb-3" />
-              <h3 className="font-medium text-lg text-gray-800 mb-1">Upload JSON File</h3>
-              <p className="text-gray-500 text-sm mb-4">Click to browse or drag and drop</p>
+              <h3 className="font-medium text-lg text-gray-800 mb-1">Upload JSON Files</h3>
+              <p className="text-gray-500 text-sm mb-4">Click to browse or drag and drop (multiple files supported)</p>
               <button 
                 className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors inline-flex items-center"
                 onClick={(e) => {
@@ -385,7 +489,7 @@ export default function JsonToExcelConverter() {
                 }}
               >
                 <FileText className="h-4 w-4 mr-2" />
-                Select File
+                Select Files
               </button>
             </div>
           </div>
@@ -399,24 +503,43 @@ export default function JsonToExcelConverter() {
               value={originalJsonString}
               onChange={(e) => {
                 setOriginalJsonString(e.target.value);
-                try {
-                  if (e.target.value.trim()) {
-                    const data = JSON.parse(e.target.value);
-                    setJsonData(data);
-                    generatePreview(data);
-                    setError('');
-                    setSuccess('JSON parsed successfully');
-                  } else {
-                    setJsonData(null);
-                    setPreview([]);
-                  }
-                } catch (err) {
-                  setError('Invalid JSON format: ' + err.message);
-                }
+                handleJsonInput(e.target.value);
               }}
             ></textarea>
           </div>
         </div>
+
+        {/* File List */}
+        {fileNames.length > 0 && (
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Loaded Files ({fileNames.length})</h3>
+            <ul className="divide-y divide-gray-200">
+              {fileNames.map((name, index) => (
+                <li key={index} className="py-2 flex items-center justify-between">
+                  <div className="flex items-center">
+                    <FileText className="h-5 w-5 text-indigo-500 mr-3" />
+                    <span className="text-gray-700">{name}</span>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      // Remove this file
+                      const newFileNames = [...fileNames];
+                      const newJsonDataList = [...jsonDataList];
+                      newFileNames.splice(index, 1);
+                      newJsonDataList.splice(index, 1);
+                      setFileNames(newFileNames);
+                      setJsonDataList(newJsonDataList);
+                      generatePreview(newJsonDataList);
+                    }}
+                    className="text-red-500 hover:text-red-700"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Alerts */}
         {error && (
@@ -424,7 +547,7 @@ export default function JsonToExcelConverter() {
             <AlertCircle className="h-5 w-5 text-red-500 mr-3 mt-0.5 flex-shrink-0" />
             <div className="flex-grow">
               <p className="text-red-800 font-medium">Error</p>
-              <p className="text-red-700 text-sm">{error}</p>
+              <p className="text-red-700 text-sm" style={{ whiteSpace: 'pre-line' }}>{error}</p>
             </div>
             <button onClick={() => setError('')} className="text-red-500 hover:text-red-700">
               <X className="h-5 w-5" />
@@ -485,9 +608,9 @@ export default function JsonToExcelConverter() {
                   ))}
                 </tbody>
               </table>
-              {Array.isArray(jsonData) && jsonData.length > 5 && (
+              {preview.length < totalRows && (
                 <p className="text-sm text-gray-500 mt-3">
-                  Showing 5 of {jsonData.length} records
+                  Showing {preview.length} of {totalRows} records
                 </p>
               )}
             </div>
@@ -496,7 +619,7 @@ export default function JsonToExcelConverter() {
 
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
-          {jsonData && (
+          {jsonDataList.length > 0 && (
             <>
               <button 
                 onClick={convertToExcel} 
